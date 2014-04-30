@@ -1,0 +1,16 @@
+language: c
+
+before_install:
+  - sudo apt-get -y install build-essential libopendbx1-dev libopendbx1-sqlite3
+  - git submodule add https://github.com/Theintercooler/OpenDBX-uv.git libraries/OpenDBX-uv
+  - (cd libraries/OpenDBX-uv && git submodule add https://github.com/Theintercooler/libuv.git libraries/uv)
+
+script:
+  - (mkdir cmakebuild && cd cmakebuild && cmake -DHAVE_LOCAL_LIBUV=1 -DHAVE_LOCAL_OPENDBXUV=1 .. && make -j5 && cd .. && rm -rf cmakebuild)
+
+compiler:
+  - clang
+  - gcc
+
+notifications:
+  webhooks: http://n.tkte.ch/h/2667/KEAfy7cVEYy3sgbHzmSn5ASY
