@@ -1,7 +1,7 @@
 language: c
 
 before_install:
-  - sudo apt-get -y install build-essential libopendbx1-dev libopendbx1-sqlite3
+  - sudo apt-get -y install build-essential libopendbx1-dev libopendbx1-sqlite3 libluajit-5.1-dev
   - git submodule add https://github.com/Theintercooler/OpenDBX-uv.git libraries/OpenDBX-uv
   - (cd libraries/OpenDBX-uv && git submodule add https://github.com/Theintercooler/libuv.git libraries/uv)
 
