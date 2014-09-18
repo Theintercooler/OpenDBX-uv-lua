@@ -16,11 +16,19 @@
 void stackDump(lua_State *L)
 {
     int i;
-    for(i = -50; i <= 50; i++)
+    printf("Lua stack dump (%i)\n", lua_gettop(L));
+    for(i = 1; i <= lua_gettop(L); i++)
     {
         if(!lua_isnil(L, i))
         {
-            printf("%i: %s (%s)\n", i, lua_tostring(L, i), lua_typename(L, lua_type(L, i)));
+            if(lua_isuserdata(L, i))
+            {
+                printf("%i: %s (%s %p)\n", i, lua_tostring(L, i), lua_typename(L, lua_type(L, i)), lua_touserdata(L, i));
+            }
+            else
+            {
+                printf("%i: %s (%s)\n", i, lua_tostring(L, i), lua_typename(L, lua_type(L, i)));
+            }
         }
     }
 }
@@ -95,7 +103,7 @@ static lua_odbxuv_handle_t *_handle_create(lua_State* L, size_t size, const char
     lhandle->handle->data = lhandle; /* Point back to lhandle from handle */
     lhandle->refCount = 0;
     lhandle->L = L;
-    
+
     /* if handle create in a coroutine, we need hold the coroutine */
     mainthread = _get_main_thread(L);
     if (L != mainthread) {
@@ -286,6 +294,7 @@ static void _push_async_error(lua_State* L, odbxuv_handle_t *op, const char* sou
 static void _handle_close(odbxuv_handle_t* handle)
 {
     odbxuv_free_handle(handle);
+
     free(handle);
 }
 
@@ -299,15 +308,16 @@ static int _handle_gc(lua_State* L)
 {
     lua_odbxuv_handle_t* lhandle = (lua_odbxuv_handle_t*)lua_touserdata(L, 1);
 
-    if (lhandle->handle)
+    if (lhandle->handle != NULL)
     {
         fprintf(stderr, "WARNING: forgot to close %s lhandle=%p handle=%p\n", lhandle->type, lhandle, lhandle->handle);
         _close_handle(lhandle->handle);
 
         _KILL_REFS(lhandle)
-        lhandle->handle->data = NULL;
+
         lhandle->handle = NULL;
     }
+    //else printf("GC %s lhandle=%p handle=%p\n", lhandle->type, lhandle, lhandle->handle);
     return 0;
 }
 
@@ -439,6 +449,9 @@ int odbxuv_lua_query(lua_State *L)
     odbxuv_op_query_t *query = _create_query(L);
 
     int err = odbxuv_query(handle, query, queryString, flags, _lua_after_query);
+
+    // Prevent connection to be garbage collected before the query
+    _register_event(L, 1, "_connection", -1);
 
     if (err < ODBX_ERR_SUCCESS)
     {
