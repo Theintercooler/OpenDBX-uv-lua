@@ -293,6 +293,14 @@ static void _push_async_error(lua_State* L, odbxuv_handle_t *op, const char* sou
 
 static void _handle_close(odbxuv_handle_t* handle)
 {
+    lua_odbxuv_handle_t * lhandle = (lua_odbxuv_handle_t *)handle->data;
+
+    if(lhandle && lhandle->refCount > 0)
+    {
+        lua_State* L = _op_get_lua(lhandle);
+        _emit_event(L, "close", 0);
+        HANDLE_UNREF(L, lhandle);
+    }
     odbxuv_free_handle(handle);
 
     free(handle);
@@ -311,6 +319,7 @@ static int _handle_gc(lua_State* L)
     if (lhandle->handle != NULL)
     {
         fprintf(stderr, "WARNING: forgot to close %s lhandle=%p handle=%p\n", lhandle->type, lhandle, lhandle->handle);
+        lhandle->handle->data = NULL;
         _close_handle(lhandle->handle);
 
         _KILL_REFS(lhandle)
@@ -494,6 +503,9 @@ int odbxuv_lua_fetch(lua_State *L)
     odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
     odbxuv_query_process(handle, _lua_after_fetch);
 
+    // Prevent the query to be garbage collected during the fetch
+    _register_event(L, 1, "_query", -1);
+
     HANDLE_REF(L, handle->data, 1);
 
     return 0;
@@ -542,14 +554,16 @@ int odbxuv_lua_close (lua_State *L)
     odbxuv_handle_t *handle = (odbxuv_handle_t *)_check_userdata(L, 1, "odbxuv_handle_t");
     lua_odbxuv_handle_t *lhandle = (lua_odbxuv_handle_t *)handle->data;
 
-    if(lhandle == 0)
+    if(lhandle == NULL || lhandle->handle == NULL)
     {
         luaL_error(L, "Handle is already closed.");
     }
 
+    HANDLE_REF(L, handle->data, 1);
+
     _close_handle(handle);
 
-    _KILL_REFS(lhandle)
+    // Make sure to makr as closing
     lhandle->handle = NULL;
 
     return 0;
@@ -561,6 +575,19 @@ int odbxuv_lua_get_env(lua_State *L)
     return 1;
 }
 
+static void _dump_open_handles_loop(uv_handle_t *handle, void* arg)
+{
+    int i = 0;
+    #define XX(_, name) if(handle->type == ++i) printf("HANDLE: %p %p %s (%i)\n", handle, handle->data, #name, i-1);
+    UV_HANDLE_TYPE_MAP(XX)
+}
+
+int odbxuv_lua_dump_open_handles(lua_State *L)
+{
+    uv_walk(_get_loop(L), _dump_open_handles_loop, NULL);
+    return 0;
+}
+
 static const luaL_reg functions[] = {
     { "setHandler", odbxuv_lua_set_handler },
     { "createHandle",   odbxuv_lua_create_handle },
@@ -570,6 +597,7 @@ static const luaL_reg functions[] = {
     { "disconnect", odbxuv_lua_disconnect },
     { "close", odbxuv_lua_close },
     { "getEnv", odbxuv_lua_get_env },
+    { "check", odbxuv_lua_dump_open_handles },
     { NULL, NULL }
 };
 

@@ -65,6 +65,9 @@ if(INSTALL_LIBRARY_DIR)
 endif()
 
 if(INSTALL_LUA_DIR)
+    install(
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/odbxuv
+        DESTINATION ${INSTALL_LUA_DIR})
     FILE(GLOB_RECURSE TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/test/**")
     install(
         FILES ${TEST_FILES}
