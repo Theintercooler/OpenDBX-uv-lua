@@ -501,7 +501,7 @@ void _lua_after_fetch(odbxuv_op_query_t *result, odbxuv_row_t *row, int status)
 
     //TODO: handle fetch errors
 
-    if(status == ODBXUV_FETCH_CB_STATUS_FIRST)
+    if(result->fetchCallbackStatus != ODBXUV_FETCH_CB_STATUS_CALLED)
     {
         lua_pushvalue(L, -1);
         _emit_event(L, "fetch", 0);
