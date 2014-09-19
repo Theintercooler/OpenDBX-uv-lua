@@ -64,7 +64,7 @@ end
 local Query = Handle:extend()
 
 function Query:isNativeHandlerType(type)
-    return type == "query" or type == "row" or type == "fetched" or type == "error" or type == "close"
+    return type == "query" or type == "row" or type == "fetched" or type == "error" or type == "close" or type == "fetch"
 end
 
 function Connection:query(query, flags, callback)
@@ -98,6 +98,26 @@ function Query:fetch(callback)
     if callback then
         self:once("fetch", callback)
     end
+end
+
+function Query:getColumnCount()
+    return native.queryColumnCount(self.handle)
+end
+
+function Query:getAffectedCount()
+    return native.queryAffectedCount(self.handle)
+end
+
+function Query:getColumnInfo(i)
+    return native.queryColumnInfo(self.handle, i)
+end
+
+function Query:getAllColumnInfo()
+    local r = {}
+    for i = 1, self:getColumnCount() do
+        r[i] = self:getColumnInfo(i)
+    end
+    return r
 end
 
 

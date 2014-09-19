@@ -45,6 +45,9 @@ typedef struct {
                             referenced by nothing and would collected by gc, then uv's callback touch an
                             invalid pointer. */
     int ref;             /* ref is null when refCount is 0 meaning we're weak */
+    char status;          /* 0 when not being closed, GC will try to close these handles 
+                             1 when user/gc is closing the handle,
+                             2 when user cloesd it but the handle is still referenced and we're waiting for the GC to kick in */
     const char* type;
 } lua_odbxuv_handle_t;
 
@@ -113,6 +116,7 @@ static lua_odbxuv_handle_t *_handle_create(lua_State* L, size_t size, const char
         lhandle->threadref = LUA_NOREF;
     }
     lhandle->ref = LUA_NOREF;
+    lhandle->status = 0;
     lhandle->type = type;
     return lhandle;
 }
@@ -301,9 +305,18 @@ static void _handle_close(odbxuv_handle_t* handle)
         _emit_event(L, "close", 0);
         HANDLE_UNREF(L, lhandle);
     }
-    odbxuv_free_handle(handle);
 
-    free(handle);
+    if(!lhandle || lhandle->refCount <= 0)
+    {
+        //printf("FREE handle: %p %s\n", handle, lhandle ? lhandle->type : "");
+        odbxuv_free_handle(handle);
+        free(handle);
+    }
+    else
+    {
+        lhandle->status = 2;
+        //printf("Delay closing of %s %i\n", lhandle->type, lhandle->refCount);
+    }
 }
 
 static int _close_handle(odbxuv_handle_t *handle)
@@ -316,15 +329,23 @@ static int _handle_gc(lua_State* L)
 {
     lua_odbxuv_handle_t* lhandle = (lua_odbxuv_handle_t*)lua_touserdata(L, 1);
 
-    if (lhandle->handle != NULL)
+    if (lhandle->handle != NULL && lhandle->status != 1)
     {
-        fprintf(stderr, "WARNING: forgot to close %s lhandle=%p handle=%p\n", lhandle->type, lhandle, lhandle->handle);
-        lhandle->handle->data = NULL;
-        _close_handle(lhandle->handle);
+        if(lhandle->status == 0)
+        {
+            fprintf(stderr, "WARNING: forgot to close %s lhandle=%p handle=%p status=%i\n", lhandle->type, lhandle, lhandle->handle, lhandle->status);
+            lhandle->handle->data = NULL;
+            lhandle->status = 1;
+            _close_handle(lhandle->handle);
+        }
 
         _KILL_REFS(lhandle)
 
-        lhandle->handle = NULL;
+        if(lhandle->status == 2)
+        {
+            //fprintf(stderr, "WARNING: final blow %s lhandle=%p handle=%p status=%i\n", lhandle->type, lhandle, lhandle->handle, lhandle->status);
+            _handle_close(lhandle->handle);
+        }
     }
     //else printf("GC %s lhandle=%p handle=%p\n", lhandle->type, lhandle, lhandle->handle);
     return 0;
@@ -376,13 +397,14 @@ static void _lua_after_connect(odbxuv_op_connect_t *op, int status)
     {
         _push_async_error(L, (odbxuv_handle_t *)op, "after_connect", NULL);
         _emit_event(L, "error", 1);
+        odbxuv_free_error((odbxuv_handle_t *)op);
     }
     else
     {
         _emit_event(L, "connect", 0);
     }
     HANDLE_UNREF(L, op->connection->data);
-    odbxuv_free_error((odbxuv_handle_t *)op);
+    odbxuv_free_handle((odbxuv_handle_t *)op);
     free(op);
 }
 
@@ -479,6 +501,12 @@ void _lua_after_fetch(odbxuv_op_query_t *result, odbxuv_row_t *row, int status)
 
     //TODO: handle fetch errors
 
+    if(status == ODBXUV_FETCH_CB_STATUS_FIRST)
+    {
+        lua_pushvalue(L, -1);
+        _emit_event(L, "fetch", 0);
+    }
+
     if(row)
     {
         int i = 0;
@@ -511,6 +539,42 @@ int odbxuv_lua_fetch(lua_State *L)
     return 0;
 }
 
+int odbxuv_lua_query_column_count(lua_State *L)
+{
+    odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
+    lua_pushinteger(L, handle->columnCount);
+    return 1;
+}
+
+int odbxuv_lua_query_affected_count(lua_State *L)
+{
+    odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
+    lua_pushinteger(L, handle->affectedCount);
+    return 1;
+}
+
+int odbxuv_lua_query_column_info(lua_State *L)
+{
+    odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
+
+    if(handle->columns == NULL)
+    {
+        luaL_error(L, "Query did not fetch column info.");
+    }
+
+    int n = lua_tonumber(L, 2);
+
+    if(n > handle->columnCount)
+    {
+        luaL_error(L, "Column index out of range %i > %i", n, handle->columnCount);
+    }
+
+    odbxuv_column_info_t *column = &handle->columns[n-1];
+    lua_pushstring(L, column->name);
+    lua_pushnumber(L, column->type);
+    return 2;
+}
+
 static void _lua_after_disconnect(odbxuv_op_disconnect_t *op, int status)
 {
     lua_odbxuv_handle_t *lhandle = (lua_odbxuv_handle_t *)op->connection->data;
@@ -529,6 +593,9 @@ static void _lua_after_disconnect(odbxuv_op_disconnect_t *op, int status)
     {
         _emit_event(L, "disconnect", 0);
     }
+
+    odbxuv_free_handle((odbxuv_handle_t *)op);
+    free(op);
 }
 
 int odbxuv_lua_disconnect(lua_State *L)
@@ -554,17 +621,17 @@ int odbxuv_lua_close (lua_State *L)
     odbxuv_handle_t *handle = (odbxuv_handle_t *)_check_userdata(L, 1, "odbxuv_handle_t");
     lua_odbxuv_handle_t *lhandle = (lua_odbxuv_handle_t *)handle->data;
 
-    if(lhandle == NULL || lhandle->handle == NULL)
+    if(lhandle == NULL || lhandle->handle == NULL || lhandle->status != 0)
     {
-        luaL_error(L, "Handle is already closed.");
+        luaL_error(L, lhandle->status == 1 ? "Handle is already being closed" : "Handle is already closed");
     }
 
     HANDLE_REF(L, handle->data, 1);
 
-    _close_handle(handle);
+    // Make sure to mark as closing
+    lhandle->status = 1;
 
-    // Make sure to makr as closing
-    lhandle->handle = NULL;
+    _close_handle(handle);
 
     return 0;
 }
@@ -589,15 +656,18 @@ int odbxuv_lua_dump_open_handles(lua_State *L)
 }
 
 static const luaL_reg functions[] = {
-    { "setHandler", odbxuv_lua_set_handler },
-    { "createHandle",   odbxuv_lua_create_handle },
-    { "connect", odbxuv_lua_connect },
-    { "query", odbxuv_lua_query },
-    { "fetch", odbxuv_lua_fetch},
-    { "disconnect", odbxuv_lua_disconnect },
-    { "close", odbxuv_lua_close },
-    { "getEnv", odbxuv_lua_get_env },
-    { "check", odbxuv_lua_dump_open_handles },
+    { "setHandler",         odbxuv_lua_set_handler },
+    { "createHandle",       odbxuv_lua_create_handle },
+    { "connect",            odbxuv_lua_connect },
+    { "query",              odbxuv_lua_query },
+    { "fetch",              odbxuv_lua_fetch},
+    { "disconnect",         odbxuv_lua_disconnect },
+    { "close",              odbxuv_lua_close },
+    { "getEnv",             odbxuv_lua_get_env },
+    { "check",              odbxuv_lua_dump_open_handles },
+    { "queryColumnCount",   odbxuv_lua_query_column_count },
+    { "queryAffectedCount", odbxuv_lua_query_affected_count },
+    { "queryColumnInfo",    odbxuv_lua_query_column_info },
     { NULL, NULL }
 };
 
