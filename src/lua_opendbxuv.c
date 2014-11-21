@@ -146,7 +146,6 @@ static void _handle_unref(lua_State* L, lua_odbxuv_handle_t* lhandle)
         }
         lhandle->ref = LUA_NOREF;
     }
-    assert(lhandle->refCount < 10);
 }
 
 #define _KILL_REFS(obj)                 \
@@ -365,9 +364,14 @@ odbxuv_connection_t* _create_connection(lua_State* L) {
     return (odbxuv_connection_t*)_handle_create(L, sizeof(odbxuv_connection_t), "odbxuv_connection_t")->handle;
 }
 
+odbxuv_op_escape_t *_create_escape(lua_State *L) {
+    return (odbxuv_op_escape_t*)_handle_create(L, sizeof(odbxuv_op_escape_t), "odbxuv_op_escape_t")->handle;
+}
+
 odbxuv_op_query_t* _create_query(lua_State* L) {
     return (odbxuv_op_query_t*)_handle_create(L, sizeof(odbxuv_op_query_t), "odbxuv_op_query_t")->handle;
 }
+
 
 int odbxuv_lua_create_handle(lua_State *L)
 {
@@ -445,6 +449,54 @@ int odbxuv_lua_connect(lua_State* L)
     return 0;
 }
 
+static void _lua_after_escape(odbxuv_op_escape_t *op, int status)
+{
+    lua_State* L = _op_get_lua(op->data);
+    
+    if (status < ODBX_ERR_SUCCESS)
+    {
+        _push_async_error(L, (odbxuv_handle_t *)op, "escape", NULL);
+        _emit_event(L, "error", 1);
+    }
+    else
+    {
+        lua_pushstring(L, op->string);
+        _emit_event(L, "escape", 1);
+    }
+
+    HANDLE_UNREF(L, op->connection->data);
+    HANDLE_UNREF(L, op->data);
+
+    odbxuv_free_error((odbxuv_handle_t *)op);
+}
+
+int odbxuv_lua_escape(lua_State *L)
+{
+    odbxuv_connection_t *handle = (odbxuv_connection_t *)_check_userdata(L, 1, "odbxuv_connection_t");
+
+    const char *escapeString = luaL_checkstring(L, 2);
+
+    if(handle->status != ODBXUV_CON_STATUS_CONNECTED)
+    {
+        luaL_error(L, "Handle is not connected!\n");
+    }
+
+    odbxuv_op_escape_t *escape = _create_escape(L);
+
+    int err = odbxuv_escape(handle, escape, escapeString, _lua_after_escape);
+
+    if (err < ODBX_ERR_SUCCESS)
+    {
+        _handle_close((odbxuv_handle_t *)escape);
+        return luaL_error(L, "odbxuv_query: %i", err);
+    }
+
+    HANDLE_REF(L, handle->data, 1);
+    HANDLE_REF(L, escape->data, -1);
+
+    return 1;
+}
+
 static void _lua_after_query(odbxuv_op_query_t *op, int status)
 {
     lua_State* L = _op_get_lua(op->data);
@@ -460,6 +512,7 @@ static void _lua_after_query(odbxuv_op_query_t *op, int status)
 
     }
 
+    HANDLE_UNREF(L, op->connection->data);
     HANDLE_UNREF(L, op->data);
 
     odbxuv_free_error((odbxuv_handle_t *)op);
@@ -481,15 +534,13 @@ int odbxuv_lua_query(lua_State *L)
 
     int err = odbxuv_query(handle, query, queryString, flags, _lua_after_query);
 
-    // Prevent connection to be garbage collected before the query
-    _register_event(L, 1, "_connection", -1);
-
     if (err < ODBX_ERR_SUCCESS)
     {
         _handle_close((odbxuv_handle_t *)query);
         return luaL_error(L, "odbxuv_connect: %i", err);
     }
 
+    HANDLE_REF(L, handle->data, 1);
     HANDLE_REF(L, query->data, -1);
 
     return 1;
@@ -499,7 +550,13 @@ void _lua_after_fetch(odbxuv_op_query_t *result, odbxuv_row_t *row, int status)
 {
     lua_State* L = _op_get_lua(result->data);
 
-    //TODO: handle fetch errors
+    if (status < ODBX_ERR_SUCCESS)
+    {
+        HANDLE_UNREF(L, result->data);
+        _push_async_error(L, (odbxuv_handle_t *)result, "fetch", NULL);
+        _emit_event(L, "error", 1);
+        return;
+    }
 
     if(result->fetchCallbackStatus != ODBXUV_FETCH_CB_STATUS_CALLED)
     {
@@ -530,9 +587,6 @@ int odbxuv_lua_fetch(lua_State *L)
 {
     odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
     odbxuv_query_process(handle, _lua_after_fetch);
-
-    // Prevent the query to be garbage collected during the fetch
-    _register_event(L, 1, "_query", -1);
 
     HANDLE_REF(L, handle->data, 1);
 
@@ -659,6 +713,7 @@ static const luaL_reg functions[] = {
     { "setHandler",         odbxuv_lua_set_handler },
     { "createHandle",       odbxuv_lua_create_handle },
     { "connect",            odbxuv_lua_connect },
+    { "escape",             odbxuv_lua_escape },
     { "query",              odbxuv_lua_query },
     { "fetch",              odbxuv_lua_fetch},
     { "disconnect",         odbxuv_lua_disconnect },

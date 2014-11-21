@@ -7,7 +7,10 @@ pcall(function() Emitter = require "luvit.core".Emitter end)
 -- TODO: use own class implementation if used without luvit
 assert(Emitter, "odbxuv's programmer is being lazy, he did not implement a custom Emitter implementation yet and therefore you are required to have luvit installed")
 
+local NULL = {}
+
 local Handle = Emitter:extend()
+Handle.NULL = NULL
 
 function Handle:initialize()
     self.handle = self.handle or native.createHandle()
@@ -25,7 +28,11 @@ function Handle:addHandlerType(name)
     end
 end
 
-function Handle:close()
+function Handle:close(cb)
+    if cb then
+        self:once("close", cb)
+    end
+
     if self.handle then
         native.close(self.handle)
         self.handle = nil
@@ -39,6 +46,8 @@ function Connection:isNativeHandlerType(type)
 end
 
 function Connection:connect(credentials, callback)
+    self.type = credentials.type
+
     native.connect(
         self.handle,
         credentials.type,
@@ -49,7 +58,12 @@ function Connection:connect(credentials, callback)
         credentials.password)
 
     if callback then
-        self:once("connect", function(...) callback(self, ...) end)
+        self:once("connect", function(...)
+            callback(nil, self, ...)
+        end)
+        self:on("error", function(err)
+            callback(err, self)
+        end)
     end
 end
 
@@ -59,6 +73,33 @@ function Connection:disconnect(callback)
     if callback then
         self:once("disconnect", callback)
     end
+end
+
+function Connection:escape(value, callback)
+    local escapeHandle = native.escape(self.handle, value)
+
+    native.setHandler(escapeHandle, "escape", function(...)
+        local suc, err = pcall(callback, nil, ...)
+        if not suc then
+            if not pcall(callback, err) then
+                self:emit("error", err)
+            end
+        end
+        if escapeHandle then
+            native.close(escapeHandle)
+            escapeHandle = nil
+        end
+    end)
+
+    native.setHandler(escapeHandle, "error", function(...)
+        if escapeHandle then
+            native.close(escapeHandle)
+            escapeHandle = nil
+        end
+        callback(...)
+    end)
+
+    native.setHandler(escapeHandle, "close", function() end)
 end
 
 local Query = Handle:extend()
@@ -75,15 +116,19 @@ function Connection:query(query, flags, callback)
 
     local q = native.query(self.handle, query, flags or 255)
 
-    local query = Query:new(q)
+    local wrappedQuery = Query:new(q)
 
     if callback then
-        query:once("query", function(...)
-            callback(query, ...)
+        wrappedQuery:on("error", function(err)
+            if type(err) == "table" then err.query = query end
+            callback(err)
+        end)
+        wrappedQuery:once("query", function(...)
+            callback(nil, wrappedQuery, ...)
         end)
     end
 
-    return query
+    return wrappedQuery
 end
 
 --Note: does not run parent constructor
@@ -129,6 +174,7 @@ end
 
 
 return {
+    Emitter = Emitter,
     Connection = Connection,
     Query = Query,
     createConnection = createConnection,
