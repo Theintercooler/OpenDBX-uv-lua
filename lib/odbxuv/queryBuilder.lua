@@ -49,6 +49,10 @@ function QueryBuilder:bind(var, value)
     self.whereCondition.vars[var] = value
 end
 
+function QueryBuilder:limit(limit)
+    self.limited = limit
+end
+
 function QueryBuilder:escapeFieldName(field)
     if type(field) == "table" then
         return field[1] .. "." .. self:escapeFieldName(field[2])
@@ -184,25 +188,36 @@ function QueryBuilder:finalizeSelect(cb)
     if self.whereCondition then
         task:push()
         self:createEscapedWhereTree(self.whereCondition, function(err, data)
-        if err then
-            task:error(err)
-        end
-        value[3] = "WHERE " .. data 
-        task:pop()
-    end)
-end
-if self.order then
-    value[4] = "ORDER BY "
-    ..self:createEscapedFieldList(self.order.fields)
-    ..(self.order.direction and "\n" .. self:createOrderDirection(self.order.direction))
-end
+            if err then
+                task:error(err)
+            end
+            value[3] = "WHERE " .. data
+            task:pop()
+        end)
+    else
+        value[3] = ""
+    end
 
-if cb then
-    task:on("finish", function()
-    cb(nil, table.concat(value, "\n"))
-end)
-task:on("error", function(...)
-cb(...)
+    if self.order then
+        value[4] = "ORDER BY "
+        ..(self.order.raw and self.order.raw or self:createEscapedFieldList(self.order.fields))
+        ..(self.order.direction and "\n" .. self:createOrderDirection(self.order.direction) or "")
+    else
+        value[4] = ""
+    end
+
+    if self.limited then
+        value[5] = "LIMIT "..self.limited
+    else
+        value[5] = ""
+    end
+
+    if cb then
+        task:on("finish", function()
+            cb(nil, table.concat(value, "\n"))
+        end)
+        task:on("error", function(...)
+            cb(...)
         end)
     end
     
