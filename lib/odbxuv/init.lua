@@ -114,6 +114,8 @@ function Connection:query(query, flags, callback)
         flags = nil
     end
 
+    assert(self.handle ~= nil, "Connection went away ...")
+
     local q = native.query(self.handle, query, flags or 255)
 
     local wrappedQuery = Query:new(q)
@@ -121,7 +123,7 @@ function Connection:query(query, flags, callback)
     if callback then
         wrappedQuery:on("error", function(err)
             if type(err) == "table" then err.query = query end
-            callback(err)
+            callback(err, wrappedQuery)
         end)
         wrappedQuery:once("query", function(...)
             callback(nil, wrappedQuery, ...)
@@ -138,10 +140,20 @@ function Query:initialize(q)
 end
 
 function Query:fetch(callback)
-    native.fetch(self.handle)
-
     if callback then
         self:once("fetch", callback)
+    end
+
+    native.fetch(self.handle)
+end
+
+function Query:namedColumns(callback)
+    return function(...)
+        local row = {}
+        for i, value in ipairs({...}) do
+            row[self:getColumnInfo(i)] = value
+        end
+        callback(row)
     end
 end
 
