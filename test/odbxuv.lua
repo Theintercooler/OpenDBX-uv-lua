@@ -5,13 +5,17 @@ local time = require "os".clock
 local createQueryBuilder = require "odbxuv.queryBuilder".createQueryBuilder
 
 local connection = odbx.createConnection({
-    type        = "mysql",
+    type        = "sqlite3",
     host        = "localhost",
     port        = nil,
     database    = "test",
     username    = "test",
     password    = "test"
-}, function(connection, ...)
+}, function(err, connection, ...)
+    if err then
+        error(err)
+    end
+
     local function disconnect()
         connection:disconnect(function()
             p "Closing connection"
@@ -19,15 +23,45 @@ local connection = odbx.createConnection({
         end)
     end
 
+    connection:query([[
+        CREATE TABLE IF NOT EXISTS servers (id INT, world TEXT);
+    ]], function(err, q)
+        if err then
+            error(err)
+        end
+
+        q:close(function() end)
+    end)
+
+
+    connection:query([[
+        INSERT INTO servers VALUES (10, "TEST"), (11, "ELVES");
+    ]], function(err, q)
+        if err then
+            error(err)
+        end
+
+        q:close(function() end)
+    end)
+
+
     local q = createQueryBuilder(connection)
     q   :select()
     q   :from("servers")
     q   :where ("id != :id")
     q   :bind("id", "world")
     q:finalize(function(err, data)
+        if err then
+            error(err)
+        end
+
         p("created query", err, data, time())
         print(data)
-        local query = connection:query(data, function(query, ...)
+        local query = connection:query(data, function(err, query, ...)
+            if err then
+                error(err)
+            end
+
             p ("Query processed on db", ..., time())
             query:on("fetch", function(...)
                 p("cols", query:getColumnCount(), query:getAffectedCount(), query:getAllColumnInfo())
