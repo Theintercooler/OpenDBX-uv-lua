@@ -21,6 +21,11 @@ function QueryBuilder:insert(...)
     self.finalize = self.finalizeInsert
 end
 
+function QueryBuilder:update(...)
+    self:from(...)
+    self.finalize = self.finalizeUpdate
+end
+
 function QueryBuilder:ignore()
     self.ignore = true
 end
@@ -35,7 +40,16 @@ end
 
 function QueryBuilder:values(...)
     self.rows = self.rows or {}
-    self.rows[#self.rows+1] = {...}
+    local row = {...}
+    for k, v in pairs(row) do
+        assert(v == self.connection.NULL or type(v) == "string" or type(v) == "number", "Value "..k.." is not a number or string: " .. type(v))
+    end
+    self.rows[#self.rows+1] = row
+end
+
+function QueryBuilder:set(values)
+    self.rows = self.rows or {}
+    self.rows[#self.rows+1] = values
 end
 
 function QueryBuilder:where(tree)
@@ -124,7 +138,7 @@ function QueryBuilder:createEscapedWhereTree(tree, cb)
         end)
     end
 
-    task:on("finish", function() p "finish" cb(nil, condition) end)
+    task:on("finish", function() cb(nil, condition) end)
     task:on("error", cb)
 
     task:pop()
@@ -165,11 +179,12 @@ function QueryBuilder:finalizeInsert(cb)
     
     if cb then
         task:on("finish", function()
-        cb(nil, table.concat(value, "\n"))
-    end)
-    task:on("error", function(...)
-    cb(...)
-end)
+            cb(nil, table.concat(value, "\n"))
+        end)
+
+        task:on("error", function(...)
+            cb(...)
+        end)
     end
     
     task:pop()
@@ -226,6 +241,69 @@ function QueryBuilder:finalizeSelect(cb)
     return task
 end
 
+function QueryBuilder:finalizeUpdate(cb)
+    local task = ibmt.create()
+    local value = {}
+    value[1] = "UPDATE ".. self:createEscapedTableList(self.from)
+    value[2] = "SET "
+
+    task:push()
+
+    -- Just take all named values from all rows
+    for _, row in pairs(self.rows) do
+        local first2 = true
+        for key, cell in pairs(row) do
+            local dest = #value+1
+            local wasFirst = first2
+            value[dest] = "<ESCAPING>"
+            task:push()
+            self:quoteValue(cell, function(err, val)
+                if err then
+                    return task:cancel(err)
+                end
+                val = self:escapeFieldName(key) .." = "..val
+                value[dest] = wasFirst and "  "..val or ", "..val
+                task:pop()
+            end)
+            first2 = false
+        end
+    end
+
+    if self.whereCondition then
+        task:push()
+        self:createEscapedWhereTree(self.whereCondition, function(err, data)
+        if err then
+            task:error(err)
+        end
+            value[#value+1] = "WHERE " .. data
+            task:pop()
+        end)
+    end
+
+    if self.order then
+        value[#value+1] = "ORDER BY "
+        ..(self.order.raw and self.order.raw or self:createEscapedFieldList(self.order.fields))
+        ..(self.order.direction and "\n" .. self:createOrderDirection(self.order.direction) or "")
+    end
+
+    if self.limited then
+        value[#value+1] = "LIMIT "..self.limited
+    end
+
+    if cb then
+        task:on("finish", function()
+            cb(nil, table.concat(value, "\n"))
+        end)
+        task:on("error", function(...)
+            cb(...)
+        end)
+    end
+
+    task:pop()
+
+    return task
+end
+
 local MySQLQueryBuilder = QueryBuilder:extend()
 
 function MySQLQueryBuilder:escapeFieldName(field)
@@ -237,7 +315,7 @@ function MySQLQueryBuilder:escapeFieldName(field)
 end
 
 local function createQueryBuilder(connection, ...)
-    if connection.type == "mysql" then
+    if connection.type == "mysql" or connection.type == "sqlite3" then
         return MySQLQueryBuilder:new(connection, ...)
     else
         error "Unsupported database type for query builder."
