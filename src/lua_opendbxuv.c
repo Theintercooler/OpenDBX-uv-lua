@@ -205,8 +205,9 @@ static void _emit_event(lua_State* L, const char* name, int nargs)
     lua_remove(L, -nargs - 2);
 
     if (lua_isfunction (L, -1) == 0) {
+        const char *typeName = lua_typename(L, -1);
         lua_pop(L, 1 + nargs);
-        fprintf(stderr, "odbxuv-lua Warning: No callback function named: %s\n", name);
+        fprintf(stderr, "odbxuv-lua Warning: No callback function named: %s (argc:%i, found: %s)\n", name, nargs, typeName);
         return;
     }
 
@@ -236,7 +237,7 @@ static void _push_async_error_raw(lua_State* L, int code, int type, const char *
     if (path) {
         lua_pushstring(L, path);
         lua_setfield(L, -2, "path");
-        lua_pushfstring(L, "%d, %s '%s'", code, msg, path);
+        lua_pushfstring(L, "%d, %s Path: '%s'", code, msg, path);
     } else {
         lua_pushfstring(L, "%d, %s", code, msg);
     }
@@ -503,7 +504,7 @@ static void _lua_after_query(odbxuv_op_query_t *op, int status)
 
     if (status < ODBX_ERR_SUCCESS)
     {
-        _push_async_error(L, (odbxuv_handle_t *)op, "after_query", NULL);
+        _push_async_error(L, (odbxuv_handle_t *)op, "after_query", op->query);
         _emit_event(L, "error", 1);
     }
     else
@@ -578,17 +579,19 @@ void _lua_after_fetch(odbxuv_op_query_t *result, odbxuv_row_t *row, int status)
     }
     else
     {
-        HANDLE_UNREF(L, result->data);
+        lua_State* L = _op_get_lua(result->data);
         _emit_event(L, "fetched", 0);
+        HANDLE_UNREF(L, result->data);
     }
 }
 
 int odbxuv_lua_fetch(lua_State *L)
 {
     odbxuv_op_query_t *handle = (odbxuv_op_query_t *)_check_userdata(L, 1, "odbxuv_op_query_t");
-    odbxuv_query_process(handle, _lua_after_fetch);
-
     HANDLE_REF(L, handle->data, 1);
+    lua_pop(L, 1);
+
+    odbxuv_query_process(handle, _lua_after_fetch);
 
     return 0;
 }
