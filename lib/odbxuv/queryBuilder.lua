@@ -271,11 +271,13 @@ function QueryBuilder:finalizeUpdate(cb)
 
     if self.whereCondition then
         task:push()
+        local whereIdx = #value+1
+        value[whereIdx] = "WHERE <CONDITION>"
         self:createEscapedWhereTree(self.whereCondition, function(err, data)
-        if err then
-            task:error(err)
-        end
-            value[#value+1] = "WHERE " .. data
+            if err then
+                return task:cancel(err)
+            end
+            value[whereIdx] = "WHERE " .. data
             task:pop()
         end)
     end
